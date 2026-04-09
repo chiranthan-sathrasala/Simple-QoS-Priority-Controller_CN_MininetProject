@@ -4,6 +4,8 @@ from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ether_types
+from ryu.lib.packet import ipv4
+from ryu.lib.packet import in_proto
 
 class QoSPriorityController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -61,25 +63,58 @@ class QoSPriorityController(app_manager.RyuApp):
 
         # 2. DECIDE where to send it
         if dst in self.mac_to_port[dpid]:
-            # If we know where the destination is, send it to that specific port
             out_port = self.mac_to_port[dpid][dst]
         else:
-            # If we don't know, flood it to all ports (broadcast)
             out_port = ofproto.OFPP_FLOOD
 
         actions = [parser.OFPActionOutput(out_port)]
+        queue_id = 0 # Default to normal queue
+        flow_priority = 1 # Default flow rule priority
 
-        # 3. INSTALL a flow rule so the switch doesn't ask us about this pair again
-        if out_port != ofproto.OFPP_FLOOD:
+        # --- QOS LOGIC START ---
+        # Check if the packet is an IPv4 packet
+        if eth.ethertype == ether_types.ETH_TYPE_IP:
+            ip = pkt.get_protocol(ipv4.ipv4)
+            
+            # Identify ICMP (Ping) Traffic [VIP Lame]
+            if ip.proto == in_proto.IPPROTO_ICMP:
+                queue_id = 1  # Assign to high-priority queue
+                flow_priority = 10 # Higher rule priority so it matches first
+                
+                # Add the queue action BEFORE the output action
+                actions = [parser.OFPActionSetQueue(queue_id), parser.OFPActionOutput(out_port)]
+                
+                if out_port != ofproto.OFPP_FLOOD:
+                    match = parser.OFPMatch(in_port=in_port, eth_type=ether_types.ETH_TYPE_IP, 
+                                            ip_proto=in_proto.IPPROTO_ICMP, eth_dst=dst, eth_src=src)
+                    self.add_flow(datapath, flow_priority, match, actions)
+                    print(f"VIP Ping Flow installed: h{src} -> h{dst} via Queue {queue_id}")
+
+            # Identify TCP Traffic [Normal Lane]
+            elif ip.proto == in_proto.IPPROTO_TCP:
+                queue_id = 0  # Assign to normal queue
+                flow_priority = 5
+                
+                actions = [parser.OFPActionSetQueue(queue_id), parser.OFPActionOutput(out_port)]
+                
+                if out_port != ofproto.OFPP_FLOOD:
+                    match = parser.OFPMatch(in_port=in_port, eth_type=ether_types.ETH_TYPE_IP, 
+                                            ip_proto=in_proto.IPPROTO_TCP, eth_dst=dst, eth_src=src)
+                    self.add_flow(datapath, flow_priority, match, actions)
+                    print(f"Standard TCP Flow installed: h{src} -> h{dst} via Queue {queue_id}")
+        
+        # Fallback for all other non-IP traffic (like ARP)
+        elif out_port != ofproto.OFPP_FLOOD:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
-            # Standard priority rule
             self.add_flow(datapath, 1, match, actions)
+        # --- QOS LOGIC END ---
 
         # 4. SEND the current packet out
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
-        out = parser.OFPActionOutput(out_port)
+        
+        # We must use the specific actions list we built above (which includes the queue)
         packet_out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-                                         in_port=in_port, actions=[out], data=data)
+                                         in_port=in_port, actions=actions, data=data)
         datapath.send_msg(packet_out)
