@@ -45,7 +45,7 @@ Open three separate terminal windows in the project directory (`sdn_qos_project`
    ```bash
    ./setup_queues.sh
    ```
-   *(This creates the physical HTB queues on the Open vSwitch).*
+   *(This creates the physical Hierarchical Token Bucket(HTB) queues on the Open vSwitch).*
 
 ### Step B: Run the Traffic Simulation
 Inside the **Terminal 2** `mininet>` prompt, run the following commands sequentially to trigger the network flood:

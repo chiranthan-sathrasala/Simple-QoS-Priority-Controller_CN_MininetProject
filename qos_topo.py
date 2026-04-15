@@ -17,5 +17,5 @@ class QoSTopo(Topo):
         self.addLink(h2, switch)
         self.addLink(h3, switch)
 
-# This dictionary allows Mininet to find your custom topology
+# This dictionary allows Mininet to find the custom topology
 topos = { 'qostopo': (lambda: QoSTopo()) }
